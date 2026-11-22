@@ -38,6 +38,8 @@
     (kids || []).forEach(function (c) { if (c !== null && c !== undefined) e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); });
     return e;
   }
+  // Edge as a status: text and glyph, never colour alone.
+  function edge(e) { var c = e >= 1.5 ? 'good' : e >= 1 ? 'ok' : 'weak'; return h('span', { class: 'edge ' + c, text: (c === 'good' ? '▲ ' : c === 'ok' ? '■ ' : '▽ ') + e.toFixed(e < 10 ? 2 : 1) + '×' }); }
   function tick(v) { return v >= 1e9 ? '$' + v / 1e9 + 'B' : '$' + v / 1e6 + 'M'; }
   function pct(v) { return v === null ? 'n/a' : (v > 0 ? '+' : '') + v.toFixed(1) + '%'; }
   function trend(v) { return h('span', { class: v === null ? 'note' : v >= 0 ? 'up' : 'down', text: (v === null ? '' : v >= 0 ? '▲ ' : '▼ ') + pct(v) }); }
@@ -85,7 +87,7 @@
     var early = rows.filter(function (r) { return r.set !== 'watchlist'; }).length;
     var total = rows.reduce(function (s, r) { return s + r.implied; }, 0);
     var exN = Object.keys(R.excluded).reduce(function (s, k) { return s + R.excluded[k]; }, 0);
-    var k = document.getElementById('kpis'); k.innerHTML = '';
+    var k = document.getElementById('kpis'); k.innerHTML = ''; k.hidden = state.view === 'detail';
     [[rows.length, 'pre-token protocols ranked'], [watched + ' / ' + R.watchlist_size, 'watchlist covered'], [early, 'found off the watchlist'],
      [usd(total), 'total implied value'], ['TVL^' + fit.b.toFixed(2), 'market fit, n=' + fit.n + ', R² ' + fit.r2.toFixed(2)], [exN, 'token products set aside']].forEach(function (x) {
       k.appendChild(h('div', { class: 'kpi' }, [h('b', { text: String(x[0]) }), h('span', { text: x[1] })]));
@@ -93,7 +95,7 @@
   }
 
   // ---- the fit chart: traded tokens (dots), the fit line, and the pre-token board (rings) ----
-  function scatter(sel, height, width) {
+  function scatter(sel, height, width, shown) {
     var W = width || 360, H = height || 260, L = 44, T = 10, Rr = 10, Bt = 26;
     var x0 = 6.6, x1 = 10.6, y0 = 5.5, y1 = 11;
     function X(v) { return L + (Math.log10(v) - x0) / (x1 - x0) * (W - L - Rr); }
@@ -108,8 +110,8 @@
     s += '<path class="fit" d="M' + X(la) + ' ' + Y(F(la, 0)) + 'L' + X(lb) + ' ' + Y(F(lb, 0)) + '"/>';
     function inside(x, y) { return Math.log10(x) >= x0 && Math.log10(x) <= x1 && Math.log10(y) >= y0 && Math.log10(y) <= y1; }
     fit.live.forEach(function (p) { if (inside(p.tvl_usd, p.mcap_usd)) s += '<circle class="traded" r="4" cx="' + X(p.tvl_usd) + '" cy="' + Y(p.mcap_usd) + '"/><circle class="hit" r="7" cx="' + X(p.tvl_usd) + '" cy="' + Y(p.mcap_usd) + '" data-t="' + esc(p.name + (p.symbol ? ' (' + p.symbol + ')' : '')) + '" data-d="trades · mcap ' + usd(p.mcap_usd) + ' · TVL ' + usd(p.tvl_usd) + '"/>'; });
-    rows.forEach(function (r) { if (inside(r.tvl_usd, r.implied)) s += '<circle class="pre" r="3.5" cx="' + X(r.tvl_usd) + '" cy="' + Y(r.implied) + '"/><circle class="hit" r="6" cx="' + X(r.tvl_usd) + '" cy="' + Y(r.implied) + '" data-s="' + r.slug + '" data-t="#' + r.rank + ' ' + esc(r.name) + '" data-d="pre-token · implied ' + usd(r.implied) + ' · TVL ' + usd(r.tvl_usd) + '"/>'; });
-    if (sel) { s += '<circle class="me" r="6" cx="' + X(sel.tvl_usd) + '" cy="' + Y(sel.implied) + '"/><text class="melabel" x="' + (X(sel.tvl_usd) + 10) + '" y="' + (Y(sel.implied) - 8) + '">' + esc(sel.name) + '</text>'; }
+    rows.forEach(function (r) { if (inside(r.tvl_usd, r.implied)) s += '<circle class="pre' + (shown && !shown[r.slug] ? ' dim' : '') + '" r="3.5" cx="' + X(r.tvl_usd) + '" cy="' + Y(r.implied) + '"/><circle class="hit" r="6" cx="' + X(r.tvl_usd) + '" cy="' + Y(r.implied) + '" data-s="' + r.slug + '" data-t="#' + r.rank + ' ' + esc(r.name) + '" data-d="pre-token · implied ' + usd(r.implied) + ' · TVL ' + usd(r.tvl_usd) + '"/>'; });
+    if (sel) { s += '<circle class="me" r="6" cx="' + X(sel.tvl_usd) + '" cy="' + Y(sel.implied) + '"/><text class="melabel" text-anchor="' + (X(sel.tvl_usd) > W * 0.65 ? 'end' : 'start') + '" x="' + (X(sel.tvl_usd) + (X(sel.tvl_usd) > W * 0.65 ? -10 : 10)) + '" y="' + (Y(sel.implied) - 10) + '">' + esc(sel.name) + '</text>'; }
     var box = h('div', { html: '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Market cap against TVL: traded tokens, the fitted line and the pre-token board">' + s + '</svg>' });
     var svg = box.firstChild;
     svg.addEventListener('mousemove', function (e) {
@@ -119,7 +121,7 @@
     });
     svg.addEventListener('mouseleave', function () { tip.hidden = true; });
     svg.addEventListener('click', function (e) { var s2 = e.target.getAttribute && e.target.getAttribute('data-s'); if (s2) go({ view: 'detail', p: s2 }); });
-    return h('div', {}, [box, h('div', { class: 'legend' }, [h('span', {}, [h('i', { class: 'l-t' }), 'Traded token (mcap)']), h('span', {}, [h('i', { class: 'l-p' }), 'Pre-token (implied)']), h('span', {}, [h('i', { class: 'l-f' }), 'Fit ±1 sd'])])]);
+    return h('div', {}, [box, h('div', { class: 'legend' }, [h('span', {}, [h('i', { class: 'l-t' }), 'Traded (mcap)']), h('span', {}, [h('i', { class: 'l-p' }), 'Pre-token (implied)']), h('span', {}, [h('i', { class: 'l-f' }), 'Fit ±1 sd'])])]);
   }
 
   function equation() {
@@ -129,9 +131,12 @@
 
   // ---- board view ----
   function board() {
-    var list = visible(), sel = bySlug[state.p];
+    var list = visible(), shown = {};
+    list.forEach(function (r) { shown[r.slug] = true; });
+    if (list.length && !shown[state.p]) state.p = list[0].slug; // the side panel follows the filter
+    var sel = bySlug[state.p];
     var f = h('div', { class: 'filters' }, [
-      h('input', { type: 'search', placeholder: 'Search protocol or category', value: state.q, 'aria-label': 'Search', oninput: function (e) { state.q = e.target.value; go({}); var i = app.querySelector('input'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }),
+      h('input', { type: 'search', placeholder: 'Search…', value: state.q, 'aria-label': 'Search', oninput: function (e) { state.q = e.target.value; go({}); var i = app.querySelector('input'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }),
       h('div', { class: 'seg', role: 'group', 'aria-label': 'Set' }, [['all', 'All'], ['watchlist', 'Watchlist'], ['early', 'Below floor'], ['off-list', 'Off-list']].map(function (o) {
         return h('button', { 'aria-pressed': String(state.set === o[0]), onclick: function () { go({ set: o[0] }); } }, [o[1]]);
       })),
@@ -145,7 +150,7 @@
     if (state.chain !== 'all') act.push('Chain: ' + state.chain); if (state.win !== 'all') act.push('Window: ' + state.win);
     if (state.min) act.push('TVL ≥ ' + usd(state.min)); if (state.q) act.push('“' + state.q + '”');
     if (state.sort !== 'rank') act.push('Sorted by ' + COLS.filter(function (c) { return c.k === state.sort; })[0].l + (state.dir < 0 ? ' ↓' : ' ↑'));
-    var maxV = rows[0].implied;
+    var maxV = list.length ? Math.max.apply(null, list.map(function (r) { return r.implied; })) : 1;
     var thead = h('tr', {}, COLS.map(function (c) {
       return h('th', { class: c.n ? 'n' : null, 'aria-sort': state.sort === c.k ? (state.dir < 0 ? 'descending' : 'ascending') : null,
         onclick: function () { go({ sort: c.k, dir: state.sort === c.k ? -state.dir : (c.k === 'rank' || c.k === 'name' ? 1 : -1) }); } }, [c.l]);
@@ -158,16 +163,16 @@
         h('td', { class: 'n' }, [usd(r.tvl_usd)]), h('td', { class: 'n' }, [trend(r.change_7d)]), h('td', { class: 'n' }, [age(r.v.age_days)]),
         h('td', { class: 'n' }, [h('div', { class: 'bar' }, [h('i', { style: 'width:' + Math.max(2, 64 * r.implied / maxV).toFixed(1) + 'px' }), h('b', { text: usd(r.implied) })])]),
         h('td', { class: 'n' }, [(r.implied / r.tvl_usd).toFixed(3)]), h('td', { class: 'n' }, [usd(r.plan.per_1k)]),
-        h('td', { class: 'n' }, [usd(r.plan.cash_cost + r.plan.opp_cost)]), h('td', { class: 'n' }, [r.plan.edge.toFixed(1) + '×']),
+        h('td', { class: 'n' }, [usd(r.plan.cash_cost + r.plan.opp_cost)]), h('td', { class: 'n' }, [edge(r.plan.edge)]),
       ]);
     }));
     var left = h('div', {}, [f, act.length ? h('div', { class: 'active-f' }, act.map(function (a) { return h('span', { class: 'chip', text: a }); }).concat([h('button', { class: 'back', onclick: function () { go({ set: 'all', cat: 'all', chain: 'all', win: 'all', min: 0, q: '', sort: 'rank', dir: 1 }); } }, ['Clear'])])) : null,
       h('div', { class: 'panel scroll' }, [h('table', {}, [h('thead', {}, [thead]), tb])])]);
     var side = h('div', { class: 'panel' }, [
       h('div', { class: 'hd' }, [h('h2', { text: 'What TVL is worth' }), h('span', { class: 'note', text: 'fitted on ' + fit.n + ' traded tokens' })]),
-      h('div', { class: 'bd' }, [scatter(sel, 250), equation(),
+      h('div', { class: 'bd' }, [scatter(sel, 250, 360, shown), equation(),
         h('dl', { class: 'kv' }, [h('dt', { text: 'Selected' }), h('dd', { text: '#' + sel.rank + ' ' + sel.name }), h('dt', { text: 'Implied value' }), h('dd', { text: usd(sel.implied) }),
-          h('dt', { text: 'Farm on' }), h('dd', { text: sel.plan.chain + ', ' + usd(sel.plan.capital) + ', ' + sel.plan.days + ' d' }), h('dt', { text: 'Modelled drop' }), h('dd', { text: usd(sel.plan.drop_usd) + ' (' + sel.plan.edge.toFixed(1) + '× costs)' })]),
+          h('dt', { text: 'Farm on' }), h('dd', { text: sel.plan.chain + ', ' + usd(sel.plan.capital) + ', ' + sel.plan.days + ' d' }), h('dt', { text: 'Modelled drop' }), h('dd', {}, [usd(sel.plan.drop_usd) + ' · ', edge(sel.plan.edge)])]),
         h('p', { class: 'note', text: 'Drop = ' + (R.params.airdrop_share * 100) + '% of implied value, shared pro rata to capital ÷ TVL × hold days ÷ ' + R.params.season_days + '. Edge = drop ÷ (gas + fees + forgone T-bill yield). Click a row or a ring for its plan.' })]),
     ]);
     return h('div', { class: 'grid' }, [left, side]);
@@ -187,7 +192,9 @@
     ];
     var top = Math.max.apply(null, steps.map(function (s) { return s[2]; }));
     var wf = h('div', { class: 'wf' }, [].concat.apply([], steps.map(function (s, k) {
-      return [h('div', { class: 'lab' }, [s[0], h('small', { text: s[1] })]), h('div', { class: 'track' + (k === 3 ? ' last' : '') }, [h('i', { style: 'width:' + (100 * s[2] / top).toFixed(1) + '%' })]), h('div', { class: 'v', text: usd(s[2]) })];
+      var d = k ? s[2] / steps[k - 1][2] - 1 : null;
+      return [h('div', { class: 'lab' }, [s[0], h('small', { text: s[1] })]), h('div', { class: 'track' + (k === 3 ? ' last' : '') }, [h('i', { style: 'width:' + (100 * s[2] / top).toFixed(1) + '%' })]),
+        h('div', { class: 'v' }, [usd(s[2]), h('small', { class: d === null ? 'note' : d >= 0 ? 'up' : 'down', text: d === null ? 'start' : (d >= 0 ? '+' : '') + (100 * d).toFixed(1) + '%' })])];
     })));
     var plan = h('ol', { class: 'plan' }, [h('li', { class: 'h' }, [h('span', { class: 'hd2', text: 'Step' }), h('span', { class: 'hd2', text: 'Cost' }), h('span', { class: 'hd2', text: 'Time' })])].concat(p.steps.map(function (s) {
       return h('li', {}, [h('span', { text: s.act }), h('span', { class: 'c', text: s.cost }), h('span', { class: 't', text: s.time })]);
@@ -210,8 +217,8 @@
         h('div', {}, [h('div', { class: 'panel' }, [h('div', { class: 'hd' }, [h('h2', { text: 'How the value is built' }), h('span', { class: 'note', text: 'each bar is the running value' })]), h('div', { class: 'bd' }, [wf])]),
           h('div', { class: 'panel', style: 'margin-top:16px' }, [h('div', { class: 'hd' }, [h('h2', { text: 'Where it sits' }), h('span', { class: 'note', text: 'against ' + fit.n + ' traded tokens' })]), h('div', { class: 'bd' }, [scatter(r, 250, 600)])])]),
         h('div', { class: 'panel' }, [h('div', { class: 'hd' }, [h('h2', { text: 'Farm plan' }), h('span', { class: 'note', text: usd(p.capital) + ' on ' + p.chain + ' for ' + p.days + ' days' })]),
-          h('div', { class: 'bd' }, [plan, h('div', { class: 'totals' }, [['Cash cost', usd(p.cash_cost)], ['Forgone yield', usd(p.opp_cost)], ['Hands-on time', mins(p.hands_on_min)], ['Calendar time', p.days + ' days'], ['Modelled drop', usd(p.drop_usd)], ['Edge', p.edge.toFixed(1) + '× costs']].map(function (s, k) {
-            return h('div', { class: 'stat' + (k === 4 ? ' hero' : '') }, [h('b', { text: s[1] }), h('span', { text: s[0] })]);
+          h('div', { class: 'bd' }, [plan, h('div', { class: 'totals' }, [['Cash cost', usd(p.cash_cost)], ['Forgone yield', usd(p.opp_cost)], ['Hands-on time', mins(p.hands_on_min)], ['Calendar time', p.days + ' days'], ['Modelled drop', usd(p.drop_usd)], ['Edge over costs', null]].map(function (s, k) {
+            return h('div', { class: 'stat' + (k === 5 ? ' edgecard ' + (p.edge >= 1.5 ? 'good' : p.edge >= 1 ? 'ok' : 'weak') : '') }, [s[1] === null ? h('b', {}, [edge(p.edge)]) : h('b', { text: s[1] }), h('span', { text: s[0] })]);
           })), caution ? h('div', { class: 'caution', text: caution }) : null].concat(cautions.map(function (c) { return h('div', { class: 'caution', text: c }); })))]),
       ]),
     ]);
