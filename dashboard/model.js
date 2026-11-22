@@ -61,11 +61,14 @@
 
   // 1. FIT: least squares of log10(mcap) on log10(TVL) over the snapshot's traded tokens.
   function fitMarket(protocols) {
-    // One point per token: records sharing a token (Aave V2, V3...) pool their TVL against one market cap.
-    var tokens = {}, all = [];
-    protocols.forEach(function (p) {
-      if (!hasToken(p) || !(p.tvl_usd > 0) || DERIVED.indexOf(p.category) >= 0) return;
-      var id = (p.symbol || p.gecko_id).toUpperCase(), t = tokens[id];
+    // One point per token, keyed by CoinGecko id. A record with a ticker but no id (Aave V3 beside
+    // Aave V2's id) joins the id whose ticker it shares, only when exactly one id carries that ticker.
+    var tokens = {}, all = [], bySym = {};
+    var usable = protocols.filter(function (p) { return hasToken(p) && p.tvl_usd > 0 && DERIVED.indexOf(p.category) < 0; });
+    usable.forEach(function (p) { if (p.gecko_id && p.symbol) { var k = p.symbol.toUpperCase(); (bySym[k] = bySym[k] || {})[p.gecko_id] = true; } });
+    usable.forEach(function (p) {
+      var ids = p.symbol ? Object.keys(bySym[p.symbol.toUpperCase()] || {}) : [];
+      var id = p.gecko_id ? 'g:' + p.gecko_id : ids.length === 1 ? 'g:' + ids[0] : 's:' + (p.symbol || p.slug).toUpperCase(), t = tokens[id];
       if (!t) { t = tokens[id] = { slug: p.slug, name: p.name, category: p.category, chains: p.chains, tvl_usd: 0, mcap_usd: 0, symbol: p.symbol, top: 0, members: 0 }; all.push(t); }
       t.tvl_usd += p.tvl_usd; t.members += 1; t.mcap_usd = Math.max(t.mcap_usd, p.mcap_usd || 0);
       if (p.tvl_usd > t.top) { t.top = p.tvl_usd; t.slug = p.slug; t.name = p.name.replace(VERSIONED, ''); t.category = p.category; t.chains = p.chains; }
@@ -111,57 +114,57 @@
     var age = ageDays(asOf, p.listed_at), days = age === null ? unknownAge : age;
     var retention = P.retention_floor + (1 - P.retention_floor) * (1 - Math.exp(-days / P.retention_days));
     var implied = sig3(classed * retention);
-    return { base: base, trended: trended, classed: classed, implied: implied, growth_pct: g, trend: trend, class_adj: adj, class_n: cls ? cls.n : 0, age_days: age, age_used: days, retention: retention };
+    // The fit's own spread: one residual sd either side is the range a reader should hold the value to.
+    return { low: sig3(implied / Math.pow(10, fit.sd)), high: sig3(implied * Math.pow(10, fit.sd)), base: base, trended: trended, classed: classed, implied: implied, growth_pct: g, trend: trend, class_adj: adj, class_n: cls ? cls.n : 0, age_days: age, age_used: days, retention: retention };
   }
 
-  function windowOf(age) {
-    if (age === null) return 'Age unknown';
-    if (age < 180) return 'Points season';
-    if (age < 730) return 'Prime window';
-    return 'Long wait';
-  }
+  // Age bands: how long DefiLlama has tracked it with no token recorded. Not a launch probability.
+  var BANDS = ['Under 6 months', '6 months to 2 years', 'Over 2 years', 'Age unknown'];
+  function windowOf(age) { return age === null ? BANDS[3] : age < 180 ? BANDS[0] : age < 730 ? BANDS[1] : BANDS[2]; }
 
   // What to do with the money, by category: the verb a farmer follows on the protocol's own app.
   function actionOf(p, cap, chain) {
     var c = (p.category || '').toLowerCase(), n = p.name, $ = usd(cap);
-    if (/curator|allocator|aggregator/.test(c)) return { act: 'Deposit ' + $ + ' USDC into the largest USDC vault ' + n + ' runs on ' + chain + ', picked from the vault list in its own app', touch: 'check the vault share price and re-deposit any rewards' };
-    if (/basis|yield|cedefi/.test(c)) return { act: 'Deposit ' + $ + ' USDC into ' + n + "'s flagship yield or delta-neutral vault on " + chain + ' and keep the receipt token in the wallet', touch: 'compound or re-stake the receipt token' };
-    if (/lend|cdp|collateral/.test(c)) return { act: 'Supply ' + $ + ' USDC to ' + n + ' on ' + chain + ', then borrow 25% of it in a stablecoin and supply that back (health factor above 2)', touch: 'repay and re-borrow a small amount' };
-    if (/dex|liquidity/.test(c)) return { act: 'Provide ' + $ + ' to ' + n + "'s deepest stablecoin pool on " + chain + ' (full range, so it never leaves range)', touch: 'make two swaps of about $50 through the pool' };
-    if (/deriv|options|perp|prediction/.test(c)) return { act: 'Deposit ' + $ + ' USDC as margin on ' + n + ' and open a hedged position: equal long and short, or one market at under 2x', touch: 'roll or rebalance the position once' };
-    if (/rwa/.test(c)) return { act: 'Pass ' + n + "'s KYC if it asks, then subscribe " + $ + ' USDC into its tokenised yield product on ' + chain, touch: 'check the yield accrual and hold' };
-    if (/restak|staking|chain|dtao/.test(c)) return { act: 'Stake ' + $ + " of the chain's native asset through " + n + ' on ' + chain + ' with its default validator or pool', touch: 'claim and restake the staking rewards' };
-    if (/stable/.test(c)) return { act: 'Mint or swap into ' + $ + ' of ' + n + "'s stablecoin on " + chain + ' and deposit it in its savings or earn module', touch: 'compound the savings yield' };
-    if (/payment/.test(c)) return { act: 'Open a ' + $ + ' channel or account on ' + n + ' and route a few payments through it', touch: 'send one small payment' };
-    if (/insurance/.test(c)) return { act: 'Deposit ' + $ + ' USDC into ' + n + "'s cover or underwriting pool on " + chain, touch: 'check the pool and claim rewards' };
-    if (/governance|incentive/.test(c)) return { act: 'Deposit ' + $ + ' into ' + n + "'s incentive gauge on " + chain + ' and vote its emissions toward your pool', touch: 'cast the weekly vote' };
-    return { act: 'Deposit ' + $ + ' USDC into ' + n + "'s main product on " + chain, touch: 'make one deposit or claim' };
+    if (/curator|allocator|aggregator/.test(c)) return { act: 'Deposit ' + $ + ' USDC into the largest USDC vault ' + n + ' runs on ' + chain + ', picked from the vault list in its own app', touch: 'claim any vault rewards and re-deposit them', tx: 1 };
+    if (/basis|yield|cedefi/.test(c)) return { act: 'Deposit ' + $ + ' USDC into ' + n + "'s flagship yield or delta-neutral vault on " + chain + ' and keep the receipt token in the wallet', touch: 'compound or re-stake the receipt token', tx: 1 };
+    if (/lend|cdp|collateral/.test(c)) return { act: 'Supply ' + $ + ' USDC to ' + n + ' on ' + chain + ', then borrow 25% of it in a stablecoin and supply that back (health factor above 2)', touch: 'repay and re-borrow $50', tx: 2 };
+    if (/dex|liquidity/.test(c)) return { act: 'Provide ' + $ + ' to ' + n + "'s deepest stablecoin pool on " + chain + ' (full range, so it never leaves range)', touch: 'make two swaps of about $50 through the pool', tx: 2 };
+    if (/deriv|options|perp|prediction/.test(c)) return { act: (/prediction/.test(c) ? 'Fund ' + $ + ' USDC on ' + n + ' and buy both outcomes of one liquid market, so the position is close to neutral' : 'Deposit ' + $ + ' USDC as margin on ' + n + ' and open a hedged position: equal long and short at under 2x'), touch: 'close and reopen one position to log volume', tx: 2 };
+    if (/rwa/.test(c)) return { act: 'Pass ' + n + "'s KYC if it asks, then subscribe " + $ + ' USDC into its tokenised yield product on ' + chain, touch: '', tx: 0 };
+    if (/restak|staking|chain|dtao/.test(c)) return { act: 'Stake ' + $ + " of the chain's native asset through " + n + ' on ' + chain + ' with its default validator or pool', touch: 'claim and restake the staking rewards', tx: 1 };
+    if (/stable/.test(c)) return { act: 'Mint or swap into ' + $ + ' of ' + n + "'s stablecoin on " + chain + ' and deposit it in its savings or earn module', touch: 'compound the savings yield', tx: 1 };
+    if (/payment/.test(c)) return { act: 'Open a ' + $ + ' channel or account on ' + n + ' and route a few payments through it', touch: 'send one small payment', tx: 1 };
+    if (/insurance/.test(c)) return { act: 'Deposit ' + $ + ' USDC into ' + n + "'s cover or underwriting pool on " + chain, touch: 'claim pool rewards', tx: 1 };
+    if (/governance|incentive/.test(c)) return { act: 'Deposit ' + $ + ' into ' + n + "'s incentive gauge on " + chain + ' and vote its emissions toward your pool', touch: 'cast the weekly vote', tx: 1 };
+    return { act: 'Deposit ' + $ + ' USDC into ' + n + "'s main product on " + chain, touch: 'make one deposit or claim', tx: 1 };
   }
 
-  // A protocol's farm plan: seven steps, each with what it costs in dollars and how long it takes.
+  // A protocol's farm plan: seven steps, each with its dollar cost and its time. The totals are summed
+  // from the steps themselves, so the plan and its summary cannot disagree.
   function farmPlan(p, v, implied) {
-    var ranked = p.chains.slice(0, 3).map(function (c, i) { return { c: c, g: gasOf(c), i: i }; });
+    var ranked = p.chains.map(function (c, i) { return { c: c, g: gasOf(c), i: i }; });
     ranked.sort(function (x, y) { return x.g - y.g || x.i - y.i; });
     var chain = ranked.length ? label(ranked[0].c) : 'its main chain', gas = ranked.length ? ranked[0].g : 0.1;
     var cap = gas >= 1 ? 2500 : 1000; // mainnet gas eats a small position
     var age = v.age_days, days = age === null ? 60 : age < 180 ? 90 : age < 730 ? 60 : 45, weeks = Math.round(days / 7);
     var kyc = /rwa/i.test(p.category || '');
     var a = actionOf(p, cap, chain);
-    var fund = cap * 0.001 + gas, deposit = gas * 2, weekly = gas * weeks, exit = gas * 2;
+    var fund = cap * 0.001 + gas, deposit = gas * 2, weekly = gas * a.tx * weeks, exit = gas * 2;
     var opp = cap * P.cash_yield * days / 365;
     var per1k = implied * P.airdrop_share * (days / P.season_days) * 1000 / p.tvl_usd, drop = per1k * cap / 1000;
-    var cash = fund + deposit + weekly + exit;
-    var other = ranked.length > 1 && ranked[0].i !== 0 ? ' (the cheapest of the chains it lists; ' + p.chains[0] + ' holds more of its TVL)' : '';
+    var cash = fund + deposit + weekly + exit, costs = cash + opp;
+    var why = ranked.length > 1 ? ' (lowest modelled gas of the ' + ranked.length + ' chains it lists)' : '';
     var steps = [
-      { act: 'Set up a fresh ' + walletOf(chain) + ' wallet used only for this farm on ' + chain + other + ', seed phrase written on paper', cost: '$0', time: '10 min' },
-      { act: 'Move ' + usd(cap) + ' onto ' + chain + ' from an exchange or a bridge, plus a little of the gas token', cost: usd(fund) + ' (0.1% route fee + gas)', time: '20 min' },
-      { act: a.act, cost: usd(deposit) + ' gas (approve + deposit); ' + usd(cap) + ' of capital at risk', time: kyc ? '1-3 days for KYC, then 15 min' : '15 min' },
-      { act: 'Once a week, ' + a.touch + ', so the wallet shows activity in every weekly points snapshot', cost: usd(weekly) + ' gas over ' + weeks + ' weeks', time: '5 min a week, ' + weeks * 5 + ' min in all' },
-      { act: 'Hold the position for at least ' + days + ' days (' + windowOf(age).toLowerCase() + '); modelled drop ' + usd(drop) + ' = ' + P.airdrop_share * 100 + '% of ' + usd(implied) + ' x ' + usd(cap) + '/' + usd(p.tvl_usd) + ' of TVL x ' + days + '/' + P.season_days + ' days', cost: usd(opp) + ' of forgone T-bill yield at 4.5%', time: days + ' days' },
-      { act: "Track points only on the rewards page linked from " + p.name + "'s own site; never sign an approval sent by DM or a lookalike claim site", cost: '$0', time: '10 min' },
-      { act: 'Exit rule: if 7-day TVL falls more than 25% or no token by day ' + days * 2 + ', withdraw; if a token launches, claim it on day one and sell half to recover costs', cost: usd(exit) + ' gas to withdraw or claim', time: '15 min' },
+      { act: 'Set up a fresh ' + walletOf(chain) + ' wallet used only for this farm on ' + chain + why + ', seed phrase written on paper', cost: '$0', time: '10 min', min: 10 },
+      { act: 'Move ' + usd(cap) + ' onto ' + chain + ' from an exchange or a bridge, plus a little of the gas token', cost: usd(fund) + ' (0.1% route fee + gas)', time: '20 min', min: 20 },
+      { act: a.act, cost: usd(deposit) + ' gas (approve + deposit); ' + usd(cap) + ' of capital at risk', time: kyc ? '1-3 days for KYC, then 15 min' : '15 min', min: 15 },
+      { act: a.tx ? 'Once a week, ' + a.touch + ', so the wallet shows activity in every weekly points snapshot' : 'Once a week, check that the balance accrues; a held deposit is what earns points here, so no transaction is needed', cost: a.tx ? usd(weekly) + ' gas (' + a.tx * weeks + ' transactions over ' + weeks + ' weeks)' : '$0', time: '5 min a week, ' + weeks * 5 + ' min in all', min: weeks * 5 },
+      { act: 'Hold for ' + days + ' days. If it runs a points or airdrop program, the modelled drop is ' + usd(drop) + ' = ' + P.airdrop_share * 100 + '% of ' + usd(implied) + ' x ' + usd(cap) + '/' + usd(p.tvl_usd) + ' of TVL x ' + days + '/' + P.season_days + ' days', cost: usd(opp) + ' of forgone T-bill yield at 4.5%', time: days + ' days', min: 0 },
+      { act: "Check for a points or rewards page linked from " + p.name + "'s own site, and track your balance there; never sign an approval sent by DM or a lookalike claim site", cost: '$0', time: '10 min', min: 10 },
+      { act: 'Exit rule: on day ' + days + ', or earlier if 7-day TVL falls more than 25%, withdraw unless points are still accruing; if a token launches, claim it and sell ' + usd(costs) + ' of it to cover the plan', cost: usd(exit) + ' gas to withdraw or claim', time: '15 min', min: 15 },
     ];
-    return { chain: chain, capital: cap, days: days, cash_cost: cash, opp_cost: opp, hands_on_min: 45 + weeks * 5 + 15, drop_usd: drop, per_1k: per1k, edge: drop / (cash + opp), steps: steps };
+    var mins = steps.reduce(function (t, x) { return t + x.min; }, 0);
+    return { chain: chain, capital: cap, days: days, cash_cost: cash, opp_cost: opp, hands_on_min: mins, drop_usd: drop, per_1k: per1k, edge: drop / costs, steps: steps };
   }
 
   // The whole radar from one snapshot: the fit, the ranked pre-token board, the traded set kept apart.
@@ -189,5 +192,5 @@
 
   function stepText(s) { return s.act + '. Cost: ' + s.cost + '. Time: ' + s.time + '.'; }
 
-  root.RadarModel = { build: build, stepText: stepText, usd: usd, params: P };
+  root.RadarModel = { build: build, stepText: stepText, usd: usd, params: P, bands: BANDS };
 })(typeof window !== 'undefined' ? window : globalThis);

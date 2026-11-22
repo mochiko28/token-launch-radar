@@ -11,19 +11,21 @@
   var bySlug = {}; rows.forEach(function (r) { bySlug[r.slug] = r; });
 
   // board.json and the page agree row for row, or the header says where they part.
-  var agree = B.length === rows.length && B.every(function (d) { var r = bySlug[d[0]]; return r && r.rank === d[1] && r.implied === d[2]; });
+  var seen = {};
+  var agree = B.length === rows.length && B.every(function (d) { var r = bySlug[d[0]], once = !seen[d[0]]; seen[d[0]] = true; return once && r && r.rank === d[1] && r.implied === d[2]; });
 
-  var state = { view: 'board', p: rows[0].slug, q: '', set: 'all', cat: 'all', chain: 'all', win: 'all', min: 0, sort: 'rank', dir: 1 };
+  var DEFAULTS = { view: 'board', p: rows[0].slug, q: '', set: 'all', cat: 'all', chain: 'all', win: 'all', min: 0, sort: 'rank', dir: 1 };
+  var state = {};
   var COLS = [
     { k: 'rank', l: '#', n: true, f: function (r) { return r.rank; } },
     { k: 'name', l: 'Protocol', f: function (r) { return r.name.toLowerCase(); } },
     { k: 'tvl', l: 'TVL', n: true, f: function (r) { return r.tvl_usd; } },
-    { k: 'g7', l: '7d', n: true, f: function (r) { return r.change_7d === null ? -1e9 : r.change_7d; } },
-    { k: 'age', l: 'No token for', n: true, f: function (r) { return r.v.age_days === null ? -1 : r.v.age_days; } },
+    { k: 'g7', l: '7d', n: true, f: function (r) { return r.change_7d; } },
+    { k: 'age', l: 'No token', n: true, f: function (r) { return r.v.age_days; } },
     { k: 'implied', l: 'Implied value', n: true, f: function (r) { return r.implied; } },
     { k: 'mult', l: '×TVL', n: true, f: function (r) { return r.implied / r.tvl_usd; } },
     { k: 'per1k', l: 'Drop/$1k', n: true, f: function (r) { return r.plan.per_1k; } },
-    { k: 'cost', l: 'Plan cost', n: true, f: function (r) { return r.plan.cash_cost + r.plan.opp_cost; } },
+    { k: 'cost', l: 'Cost', n: true, f: function (r) { return r.plan.cash_cost + r.plan.opp_cost; } },
     { k: 'edge', l: 'Edge', n: true, f: function (r) { return r.plan.edge; } },
   ];
 
@@ -39,7 +41,7 @@
     return e;
   }
   // Edge as a status: text and glyph, never colour alone.
-  function edge(e) { var c = e >= 1.5 ? 'good' : e >= 1 ? 'ok' : 'weak'; return h('span', { class: 'edge ' + c, text: (c === 'good' ? '▲ ' : c === 'ok' ? '■ ' : '▽ ') + e.toFixed(e < 10 ? 2 : 1) + '×' }); }
+  function edge(e) { var c = e >= 1.5 ? 'good' : e >= 1 ? 'ok' : 'weak'; return h('span', { class: 'edge ' + c, text: (c === 'good' ? '▲ ' : c === 'ok' ? '■ ' : '▽ ') + (e < 10 ? (Math.floor(e * 100) / 100).toFixed(2) : e.toFixed(1)) + '×' }); }
   function tick(v) { return v >= 1e9 ? '$' + v / 1e9 + 'B' : '$' + v / 1e6 + 'M'; }
   function pct(v) { return v === null ? 'n/a' : (v > 0 ? '+' : '') + v.toFixed(1) + '%'; }
   function trend(v) { return h('span', { class: v === null ? 'note' : v >= 0 ? 'up' : 'down', text: (v === null ? '' : v >= 0 ? '▲ ' : '▼ ') + pct(v) }); }
@@ -49,11 +51,19 @@
 
   // ---- URL hash <-> state ----
   function readHash() {
+    var next = {}, k;
+    for (k in DEFAULTS) next[k] = DEFAULTS[k];
     location.hash.replace(/^#/, '').split('&').forEach(function (kv) {
-      var p = kv.split('='); if (!p[0] || !(p[0] in state)) return;
-      var v = decodeURIComponent(p[1] || ''); state[p[0]] = typeof state[p[0]] === 'number' ? Number(v) || 0 : v;
+      var p = kv.split('='), v; if (!p[0] || !(p[0] in DEFAULTS)) return;
+      try { v = decodeURIComponent(p[1] || ''); } catch (e) { return; }
+      next[p[0]] = typeof DEFAULTS[p[0]] === 'number' ? Number(v) || 0 : v;
     });
-    if (!bySlug[state.p]) state.p = rows[0].slug;
+    // Anything the page does not know falls back to its default rather than breaking the view.
+    if (['board', 'detail', 'traded', 'method'].indexOf(next.view) < 0) next.view = 'board';
+    if (!bySlug[next.p]) next.p = rows[0].slug;
+    if (!COLS.some(function (c) { return c.k === next.sort; })) next.sort = 'rank';
+    next.dir = next.dir < 0 ? -1 : 1;
+    state = next;
   }
   function go(patch) { for (var k in patch) state[k] = patch[k]; var o = []; for (var k2 in state) o.push(k2 + '=' + encodeURIComponent(state[k2])); history.replaceState(null, '', '#' + o.join('&')); render(); }
 
@@ -69,7 +79,11 @@
         r.tvl_usd >= state.min && (!q || (r.name + ' ' + r.slug + ' ' + (r.category || '')).toLowerCase().indexOf(q) >= 0);
     });
     var col = COLS.filter(function (c) { return c.k === state.sort; })[0] || COLS[0];
-    out.sort(function (a, b) { var x = col.f(a), y = col.f(b); return (x < y ? -1 : x > y ? 1 : a.rank - b.rank) * state.dir; });
+    out.sort(function (a, b) {
+      var x = col.f(a), y = col.f(b);
+      if (x === null || y === null) return x === y ? a.rank - b.rank : x === null ? 1 : -1; // n/a sorts last
+      return x < y ? -state.dir : x > y ? state.dir : a.rank - b.rank;
+    });
     return out;
   }
 
@@ -110,7 +124,7 @@
     s += '<path class="fit" d="M' + X(la) + ' ' + Y(F(la, 0)) + 'L' + X(lb) + ' ' + Y(F(lb, 0)) + '"/>';
     function inside(x, y) { return Math.log10(x) >= x0 && Math.log10(x) <= x1 && Math.log10(y) >= y0 && Math.log10(y) <= y1; }
     fit.live.forEach(function (p) { if (inside(p.tvl_usd, p.mcap_usd)) s += '<circle class="traded" r="4" cx="' + X(p.tvl_usd) + '" cy="' + Y(p.mcap_usd) + '"/><circle class="hit" r="7" cx="' + X(p.tvl_usd) + '" cy="' + Y(p.mcap_usd) + '" data-t="' + esc(p.name + (p.symbol ? ' (' + p.symbol + ')' : '')) + '" data-d="trades · mcap ' + usd(p.mcap_usd) + ' · TVL ' + usd(p.tvl_usd) + '"/>'; });
-    rows.forEach(function (r) { if (inside(r.tvl_usd, r.implied)) s += '<circle class="pre' + (shown && !shown[r.slug] ? ' dim' : '') + '" r="3.5" cx="' + X(r.tvl_usd) + '" cy="' + Y(r.implied) + '"/><circle class="hit" r="6" cx="' + X(r.tvl_usd) + '" cy="' + Y(r.implied) + '" data-s="' + r.slug + '" data-t="#' + r.rank + ' ' + esc(r.name) + '" data-d="pre-token · implied ' + usd(r.implied) + ' · TVL ' + usd(r.tvl_usd) + '"/>'; });
+    rows.forEach(function (r) { if (inside(r.tvl_usd, r.implied)) s += '<circle class="pre' + (shown && !shown[r.slug] ? ' dim' : '') + '" r="3.5" cx="' + X(r.tvl_usd) + '" cy="' + Y(r.implied) + '"/><circle class="hit" r="6" cx="' + X(r.tvl_usd) + '" cy="' + Y(r.implied) + '"' + (shown && !shown[r.slug] ? '' : ' data-s="' + r.slug + '"') + ' data-t="#' + r.rank + ' ' + esc(r.name) + '" data-d="pre-token · implied ' + usd(r.implied) + ' · TVL ' + usd(r.tvl_usd) + '"/>'; });
     if (sel) { s += '<circle class="me" r="6" cx="' + X(sel.tvl_usd) + '" cy="' + Y(sel.implied) + '"/><text class="melabel" text-anchor="' + (X(sel.tvl_usd) > W * 0.65 ? 'end' : 'start') + '" x="' + (X(sel.tvl_usd) + (X(sel.tvl_usd) > W * 0.65 ? -10 : 10)) + '" y="' + (Y(sel.implied) - 10) + '">' + esc(sel.name) + '</text>'; }
     var box = h('div', { html: '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Market cap against TVL: traded tokens, the fitted line and the pre-token board">' + s + '</svg>' });
     var svg = box.firstChild;
@@ -134,31 +148,31 @@
     var list = visible(), shown = {};
     list.forEach(function (r) { shown[r.slug] = true; });
     if (list.length && !shown[state.p]) state.p = list[0].slug; // the side panel follows the filter
-    var sel = bySlug[state.p];
+    var sel = list.length ? bySlug[state.p] : null;
     var f = h('div', { class: 'filters' }, [
-      h('input', { type: 'search', placeholder: 'Search…', value: state.q, 'aria-label': 'Search', oninput: function (e) { state.q = e.target.value; go({}); var i = app.querySelector('input'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }),
+      h('input', { type: 'search', placeholder: 'Search…', value: state.q, 'aria-label': 'Search', oninput: function (e) { var at = e.target.selectionStart; go({ q: e.target.value }); var i = app.querySelector('input'); i.focus(); i.setSelectionRange(at, at); } }),
       h('div', { class: 'seg', role: 'group', 'aria-label': 'Set' }, [['all', 'All'], ['watchlist', 'Watchlist'], ['early', 'Below floor'], ['off-list', 'Off-list']].map(function (o) {
         return h('button', { 'aria-pressed': String(state.set === o[0]), onclick: function () { go({ set: o[0] }); } }, [o[1]]);
       })),
       select('cat', 'All categories', cats), select('chain', 'All chains', chains),
-      select('win', 'Any launch window', ['Points season', 'Prime window', 'Long wait', 'Age unknown']),
+      select('win', 'Any age band', M.bands),
       h('select', { 'aria-label': 'Minimum TVL', onchange: function (e) { go({ min: Number(e.target.value) }); } }, [0, 1e7, 5e7, 1e8, 5e8].map(function (v) { return h('option', { value: v, selected: state.min === v ? 'selected' : null }, [v ? 'TVL ≥ ' + usd(v) : 'Any TVL']); })),
       h('span', { class: 'shown', text: list.length + ' of ' + rows.length + ' shown' }),
     ]);
     var act = [];
     if (state.set !== 'all') act.push('Set: ' + state.set); if (state.cat !== 'all') act.push('Category: ' + state.cat);
-    if (state.chain !== 'all') act.push('Chain: ' + state.chain); if (state.win !== 'all') act.push('Window: ' + state.win);
+    if (state.chain !== 'all') act.push('Chain: ' + state.chain); if (state.win !== 'all') act.push('Age: ' + state.win);
     if (state.min) act.push('TVL ≥ ' + usd(state.min)); if (state.q) act.push('“' + state.q + '”');
     if (state.sort !== 'rank') act.push('Sorted by ' + COLS.filter(function (c) { return c.k === state.sort; })[0].l + (state.dir < 0 ? ' ↓' : ' ↑'));
     var maxV = list.length ? Math.max.apply(null, list.map(function (r) { return r.implied; })) : 1;
     var thead = h('tr', {}, COLS.map(function (c) {
       return h('th', { class: c.n ? 'n' : null, 'aria-sort': state.sort === c.k ? (state.dir < 0 ? 'descending' : 'ascending') : null,
-        onclick: function () { go({ sort: c.k, dir: state.sort === c.k ? -state.dir : (c.k === 'rank' || c.k === 'name' ? 1 : -1) }); } }, [c.l]);
+        onclick: function () { go({ sort: c.k, dir: state.sort === c.k ? -state.dir : (c.k === 'rank' || c.k === 'name' ? 1 : -1) }); } }, [h('button', { class: 'sortbtn', type: 'button' }, [c.l])]);
     }));
     var tb = h('tbody', {}, list.map(function (r) {
       return h('tr', { class: r.slug === state.p ? 'sel' : null, onclick: function () { go({ view: 'detail', p: r.slug }); } }, [
         h('td', { class: 'rank' }, [String(r.rank)]),
-        h('td', {}, [h('div', { class: 'pname' }, [r.name + ' ', h('span', { class: 'tag ' + r.set, text: r.set === 'early' ? 'below floor' : r.set })]),
+        h('td', {}, [h('div', { class: 'pname' }, [h('a', { href: '#view=detail&p=' + r.slug, onclick: function (e) { e.preventDefault(); } }, [r.name]), ' ', h('span', { class: 'tag ' + r.set, text: r.set === 'early' ? 'below floor' : r.set })]),
           h('div', { class: 'psub', text: (r.category || 'Uncategorised') + ' · ' + r.chains.slice(0, 3).join(', ') + (r.chains.length > 3 ? ' +' + (r.chains.length - 3) : '') })]),
         h('td', { class: 'n' }, [usd(r.tvl_usd)]), h('td', { class: 'n' }, [trend(r.change_7d)]), h('td', { class: 'n' }, [age(r.v.age_days)]),
         h('td', { class: 'n' }, [h('div', { class: 'bar' }, [h('i', { style: 'width:' + Math.max(2, 64 * r.implied / maxV).toFixed(1) + 'px' }), h('b', { text: usd(r.implied) })])]),
@@ -171,7 +185,7 @@
     var side = h('div', { class: 'panel' }, [
       h('div', { class: 'hd' }, [h('h2', { text: 'What TVL is worth' }), h('span', { class: 'note', text: 'fitted on ' + fit.n + ' traded tokens' })]),
       h('div', { class: 'bd' }, [scatter(sel, 250, 360, shown), equation(),
-        h('dl', { class: 'kv' }, [h('dt', { text: 'Selected' }), h('dd', { text: '#' + sel.rank + ' ' + sel.name }), h('dt', { text: 'Implied value' }), h('dd', { text: usd(sel.implied) }),
+        !sel ? h('p', { class: 'note', text: 'No protocol matches these filters.' }) : h('dl', { class: 'kv' }, [h('dt', { text: 'Selected' }), h('dd', { text: '#' + sel.rank + ' ' + sel.name }), h('dt', { text: 'Implied value' }), h('dd', { text: usd(sel.implied) + ' (' + usd(sel.v.low) + '–' + usd(sel.v.high) + ')' }),
           h('dt', { text: 'Farm on' }), h('dd', { text: sel.plan.chain + ', ' + usd(sel.plan.capital) + ', ' + sel.plan.days + ' d' }), h('dt', { text: 'Modelled drop' }), h('dd', {}, [usd(sel.plan.drop_usd) + ' · ', edge(sel.plan.edge)])]),
         h('p', { class: 'note', text: 'Drop = ' + (R.params.airdrop_share * 100) + '% of implied value, shared pro rata to capital ÷ TVL × hold days ÷ ' + R.params.season_days + '. Edge = drop ÷ (gas + fees + forgone T-bill yield). Click a row or a ring for its plan.' })]),
     ]);
@@ -202,16 +216,16 @@
     var cautions = [];
     if (p.edge < 1) cautions.push('At ' + usd(r.tvl_usd) + ' of TVL the modelled drop (' + usd(p.drop_usd) + ') does not cover the plan\'s costs: farm it only with capital you would park here anyway, or pick a smaller protocol from the Edge column.');
     var caution = r.set === 'off-list' ? 'Above the floor but left off the house watchlist, which drops products whose parent protocol is recorded: check whether a parent token already trades before farming.' :
-      r.window === 'Long wait' ? 'Over two years with no recorded token: the value holds if a token comes, but the chance it ever comes is lower. The plan keeps the hold short.' :
-      r.window === 'Points season' ? 'Young TVL is partly points capital that may leave at launch; retention cuts its value to ×' + v.retention.toFixed(2) + '.' : null;
+      r.window === M.bands[2] ? 'Tracked for over two years with no token recorded: the value holds if a token comes, but this board does not say one will. The plan keeps the hold short.' :
+      r.window === M.bands[0] ? 'Young TVL is partly points capital that may leave at launch; retention cuts its value to ×' + v.retention.toFixed(2) + '.' : null;
     return h('div', {}, [
       h('div', { class: 'dhead' }, [h('div', {}, [h('h2', {}, ['#' + r.rank + ' ' + r.name + ' ', h('span', { class: 'tag ' + r.set, text: r.set === 'early' ? 'below floor' : r.set })]),
         h('div', { class: 'psub', text: (r.category || 'Uncategorised') + ' · ' + r.chains.join(', ') + ' · listed ' + (r.listed_at || 'n/a') + ' · ' + r.window + ' · records no token' })]),
         h('div', {}, [h('button', { class: 'back', onclick: function () { go({ view: 'detail', p: rows[Math.max(0, i - 1)].slug }); } }, ['← #' + Math.max(1, r.rank - 1)]), ' ',
           h('button', { class: 'back', onclick: function () { go({ view: 'detail', p: rows[Math.min(rows.length - 1, i + 1)].slug }); } }, ['#' + Math.min(rows.length, r.rank + 1) + ' →']), ' ',
           h('button', { class: 'back', onclick: function () { go({ view: 'board' }); } }, ['Board'])])]),
-      h('div', { class: 'stats' }, [['TVL', usd(r.tvl_usd)], ['7-day change', pct(r.change_7d)], ['Without a token', age(v.age_days)], ['Implied ×TVL', (r.implied / r.tvl_usd).toFixed(3)], ['Implied value', usd(r.implied)]].map(function (s, k) {
-        return h('div', { class: 'stat' + (k === 4 ? ' hero' : '') }, [h('b', { text: s[1] }), h('span', { text: s[0] })]);
+      h('div', { class: 'stats' }, [['TVL', usd(r.tvl_usd)], ['7-day change', pct(r.change_7d)], ['Tracked, no token', age(v.age_days)], ['Implied ×TVL', (r.implied / r.tvl_usd).toFixed(3)], ['Implied value', usd(r.implied)]].map(function (s, k) {
+        return h('div', { class: 'stat' + (k === 4 ? ' hero' : '') }, [h('b', { text: s[1] }), h('span', { text: k === 4 ? 'Implied value · fit ±1 sd ' + usd(v.low) + '–' + usd(v.high) : s[0] })]);
       })),
       h('div', { class: 'detail' }, [
         h('div', {}, [h('div', { class: 'panel' }, [h('div', { class: 'hd' }, [h('h2', { text: 'How the value is built' }), h('span', { class: 'note', text: 'each bar is the running value' })]), h('div', { class: 'bd' }, [wf])]),

@@ -71,12 +71,12 @@ const rows = radar.rows.map((r: any) => ({
   days_without_token: r.v.age_days,
   launch_window: r.window,
   model: {
-    fitted_usd: Math.round(r.v.base), trend_multiplier: +r.v.trend.toFixed(4), class_adj_log10: +r.v.class_adj.toFixed(4),
+    fitted_usd: Math.round(r.v.base), trend_multiplier: +r.v.trend.toFixed(4), range_low_usd: r.v.low, range_high_usd: r.v.high, class_adj_log10: +r.v.class_adj.toFixed(4),
     retention: +r.v.retention.toFixed(4), implied_to_tvl: +(r.implied / r.tvl_usd).toFixed(4),
   },
   farm: {
     chain: r.plan.chain, capital_usd: r.plan.capital, hold_days: r.plan.days, cash_cost_usd: +r.plan.cash_cost.toFixed(2),
-    opportunity_cost_usd: +r.plan.opp_cost.toFixed(2), hands_on_minutes: r.plan.hands_on_min, modelled_drop_usd: Math.round(r.plan.drop_usd),
+    opportunity_cost_usd: +r.plan.opp_cost.toFixed(2), hands_on_minutes: r.plan.hands_on_min, modelled_drop_usd: +r.plan.drop_usd.toFixed(2), edge: +r.plan.edge.toFixed(3),
   },
   farm_steps: r.plan.steps.map((s: any) => String(M.stepText(s)).trim()),
 }));
